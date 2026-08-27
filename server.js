@@ -32,17 +32,25 @@ app.post('/process-order', async (req, res) => {
     try {
         console.log(`Starting Automation for Order #${order_id}...`);
         
+        // Render / Linux Environment Optimized Launch Config
         browser = await puppeteer.launch({
             headless: 'new',
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--single-process',
+                '--no-zygote',
+                '--disable-gpu'
+            ]
         });
 
         const page = await browser.newPage();
 
-        // ১. লগইন পেজে যাওয়া ও লগইন
+        // ১. লগইন পেজে যাওয়া ও লগইন
         await page.goto(SITE_LOGIN_URL, { waitUntil: 'networkidle2' });
         
-        // লগইন ইনপুট ফিল্ড ও পাসওয়ার্ড ফিল্ড
+        // লগইন ইনপুট ফিল্ড ও পাসওয়ার্ড ফিল্ড
         await page.type('input[type="text"], input[type="email"]', SITE_USERNAME);
         await page.type('input[type="password"]', SITE_PASSWORD);
         
@@ -53,7 +61,7 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Login successful on MailPro Portal.');
 
-        // ২. অর্ডার ফর্মে যাওয়া ও তথ্য পূরণ
+        // ২. অর্ডার ফর্মে যাওয়া ও তথ্য পূরণ
         const orderPageUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=order_now&service_id=1';
         await page.goto(orderPageUrl, { waitUntil: 'networkidle2' });
 
@@ -77,11 +85,11 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Order submitted. Navigating to My Orders history...');
 
-        // ৩. My Orders পেজে গিয়ে ডাউনলোডের জন্য ওয়েট করা
+        // ৩. My Orders পেজে গিয়ে ডাউনলোডের জন্য ওয়েট করা
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
-        // স্ট্যাটাস COMPLETED হওয়া এবং Download বাটন পাওয়া পর্যন্ত সর্বোচ্চ ৩০ সেকেন্ড ওয়েট
+        // স্ট্যাটাস COMPLETED হওয়া এবং Download বাটন পাওয়া পর্যন্ত সর্বোচ্চ ৩০ সেকেন্ড ওয়েট
         await page.waitForSelector('a.btn, button:contains("Download"), td:contains("COMPLETED")', { timeout: 30000 }).catch(() => {});
 
         // ডাউনলোডের ইউআরএল (Download Link) সংগ্রহ
@@ -122,7 +130,7 @@ app.post('/process-order', async (req, res) => {
 
         const rawDownloadUrl = ghResponse.data.content.download_url;
 
-        // ৫. ওয়ার্ডপ্রেসে আপডেট পাঠানো
+        // ৫. ওয়ার্ডপ্রেসে আপডেট পাঠানো
         if (WP_SITE_URL) {
             await axios.post(`${WP_SITE_URL}/wp-json/wp/v2/sop_orders`, {
                 order_id: order_id,
