@@ -120,17 +120,17 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Inputs filled successfully. Submitting form...');
 
-        // নেটিভ ক্লিক দিয়ে AJAX ইভেন্ট ট্র্রিগার করা (Fixed Section)
+        // নেটিভ ক্লিক দিয়ে AJAX ইভেন্ট ট্র্রিগার করা এবং অটোমেটিক রিডাইরেক্টের জন্য অপেক্ষা করা
         const submitBtn = await page.$('#sop_order_submit_btn, button[type="submit"], input[type="submit"]');
         
         if (submitBtn) {
             await Promise.all([
-                page.waitForNetworkIdle({ idleTime: 2000, timeout: 25000 }).catch(() => console.log('Network wait timeout...')),
+                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => console.log('Navigation timeout after submit...')),
                 page.evaluate(btn => btn.click(), submitBtn)
             ]);
         } else {
             await Promise.all([
-                page.waitForNetworkIdle({ idleTime: 2000, timeout: 25000 }).catch(() => {}),
+                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
                 page.evaluate(() => {
                     const btn = document.querySelector('button, input[type="submit"]');
                     if(btn) btn.click();
@@ -138,14 +138,11 @@ app.post('/process-order', async (req, res) => {
             ]);
         }
 
-        await new Promise(r => setTimeout(r, 2000));
-        console.log('Order submit action performed and network loading finished.');
+        console.log('Order submit action performed and redirected to history page.');
 
         // ৪. নতুন অর্ডার এবং ডাউনলোডের জন্য অপেক্ষা
-        await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
-
         let fileDownloadUrl = null;
-        const maxWaitTime = 7 * 60 * 1000;
+        const maxWaitTime = 7 * 60 * 1000; // ৭ মিনিট অপেক্ষা করবে 
         const checkInterval = 10 * 1000;
         const startTime = Date.now();
 
