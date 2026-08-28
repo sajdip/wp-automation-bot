@@ -61,7 +61,7 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Login successful on MailPro Portal.');
 
-        // ২. পুরোনো শেষ অর্ডারের তথ্য সংরক্ষণ (ভুয়ো বা পুরোনো সাকসেস ধরা বন্ধ করতে)
+        // ২. পুরোনো শেষ অর্ডারের রেফারেন্স সংরক্ষণ
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
         
@@ -76,19 +76,14 @@ app.post('/process-order', async (req, res) => {
 
         // নাম (অপশনাল) ইনপুট
         if (input_name) {
-            const nameSelector = 'input[type="text"]:not([type="hidden"])';
-            const nameField = await page.$(nameSelector);
+            const nameField = await page.$('input[type="text"]:not([type="hidden"])');
             if (nameField) {
-                await nameField.focus();
-                await page.keyboard.down('Control');
-                await page.keyboard.press('A');
-                await page.keyboard.up('Control');
-                await page.keyboard.press('Backspace');
-                await nameField.type(input_name.toString(), { delay: 50 });
+                await nameField.click({ clickCount: 3 });
+                await nameField.type(input_name.toString());
             }
         }
 
-        // ড্রপডাউন (প্রদত্ত তথ্যের ধরন) সিলেক্ট
+        // ড্রপডাউন সিলেক্ট
         await page.evaluate((typeVal) => {
             const sel = document.querySelector('select');
             if (sel) {
@@ -103,57 +98,77 @@ app.post('/process-order', async (req, res) => {
             }
         }, data_type);
 
-        // Digit ইনপুট (name="digit")
+        // Digit ইনপুট
         if (input_digit) {
             const digitSelector = 'input[name="digit"], input[type="number"]';
             await page.waitForSelector(digitSelector, { visible: true, timeout: 10000 });
             const digitField = await page.$(digitSelector);
             if (digitField) {
-                await digitField.focus();
-                await page.keyboard.down('Control');
-                await page.keyboard.press('A');
-                await page.keyboard.up('Control');
-                await page.keyboard.press('Backspace');
-                await digitField.type(input_digit.toString(), { delay: 50 });
+                await digitField.click({ clickCount: 3 });
+                await digitField.type(input_digit.toString());
             }
         }
 
-        console.log('Inputs filled successfully. Clicking #sop_order_submit_btn...');
+        console.log('Inputs filled successfully. Submitting form with button payload...');
 
-        // সঠিক বাটন ID #sop_order_submit_btn এ ক্লিক করা
-        await page.waitForSelector('#sop_order_submit_btn', { visible: true, timeout: 10000 });
+        // ফর্মে p_order_submit_btn ডাটা সংযুক্ত করে নিখুঁত সাবমিট
         await Promise.all([
-            page.click('#sop_order_submit_btn'),
-            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {})
+            page.evaluate(() => {
+                const form = document.querySelector('form');
+                const btn = document.querySelector('#sop_order_submit_btn') || document.querySelector('button[type="submit"]');
+                
+                if (form) {
+                    // PHP POST ডাটায় বাটনের নাম পাঠাতে হিডেন ফিল্ড যোগ
+                    const hiddenInput = document.createElement('input');
+                    hiddenInput.type = 'hidden';
+                    hiddenInput.name = 'p_order_submit_btn';
+                    hiddenInput.value = '1';
+                    form.appendChild(hiddenInput);
+                }
+
+                if (btn) {
+                    btn.click();
+                } else if (form) {
+                    form.submit();
+                }
+            }),
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
         ]);
 
-        console.log('Order submit action performed on #sop_order_submit_btn.');
+        console.log('Order submit action performed.');
 
-        // ৪. নতুন অর্ডার তালিকায় নিবন্ধিত হওয়ার এবং অ্যাপ্রুভালের অপেক্ষা
+        // ৪. নতুন অর্ডার তালিকাভুক্ত হওয়া এবং অ্যাপ্রুভালের জন্য অপেক্ষা (সর্বোচ্চ ৭ মিনিট)
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
         let fileDownloadUrl = null;
-        const maxWaitTime = 7 * 60 * 1000; // ৭ মিনিট
-        const checkInterval = 10 * 1000;   // ১০ সেকেন্ড
+        const maxWaitTime = 7 * 60 * 1000;
+        const checkInterval = 10 * 1000;
         const startTime = Date.now();
 
         while (Date.now() - startTime < maxWaitTime) {
-            const orderCheck = await page.evaluate((prevRef) => {
-                const firstRow = document.querySelector('table tbody tr:first-child') || document.querySelector('table tr:nth-child(2)');
-                if (!firstRow) return { isNew: false, completed: false, url: null };
+            let orderCheck = { isNew: false, completed: false, url: null };
+            
+            try {
+                // Detached Frame এরর এড়াতে try-catch ব্যবহার
+                orderCheck = await page.evaluate((prevRef) => {
+                    const firstRow = document.querySelector('table tbody tr:first-child') || document.querySelector('table tr:nth-child(2)');
+                    if (!firstRow) return { isNew: false, completed: false, url: null };
 
-                const currentText = firstRow.innerText.trim();
-                const isNew = currentText !== prevRef;
-                const statusText = currentText.toUpperCase();
-                const isCompleted = statusText.includes('COMPLETED');
-                const downloadBtn = firstRow.querySelector('a[href*="download"], a[href*="sop_action"]');
+                    const currentText = firstRow.innerText.trim();
+                    const isNew = currentText !== prevRef;
+                    const statusText = currentText.toUpperCase();
+                    const isCompleted = statusText.includes('COMPLETED');
+                    const downloadBtn = firstRow.querySelector('a[href*="download"], a[href*="sop_action"]');
 
-                return {
-                    isNew: isNew,
-                    completed: isCompleted,
-                    url: downloadBtn ? downloadBtn.href : null
-                };
-            }, previousTopOrderReference);
+                    return {
+                        isNew: isNew,
+                        completed: isCompleted,
+                        url: downloadBtn ? downloadBtn.href : null
+                    };
+                }, previousTopOrderReference);
+            } catch (evalError) {
+                console.log('Waiting for frame stabilization...');
+            }
 
             if (!orderCheck.isNew) {
                 console.log('Order submission not registered on portal yet. Waiting...');
