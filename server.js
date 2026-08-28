@@ -5,7 +5,6 @@ const app = express();
 
 app.use(express.json());
 
-// Environment Variables
 const BOT_SECRET_KEY = process.env.BOT_SECRET_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_REPO = process.env.GITHUB_REPO;
@@ -45,6 +44,7 @@ app.post('/process-order', async (req, res) => {
         });
 
         const page = await browser.newPage();
+        await page.setViewport({ width: 1440, height: 900 });
         page.setDefaultNavigationTimeout(60000);
 
         // ১. লগইন প্রসেস
@@ -61,16 +61,22 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Login successful on MailPro Portal.');
 
-        // ২. পুরোনো শেষ অর্ডারের রেফারেন্স সংরক্ষণ
+        // ২. বর্তমানে সর্বোচ্চ কত নম্বর অর্ডার আছে তা বের করা
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
         
-        const previousTopOrderReference = await page.evaluate(() => {
-            const firstRow = document.querySelector('table tbody tr:first-child') || document.querySelector('table tr:nth-child(2)');
-            return firstRow ? firstRow.innerText.trim() : '';
+        const previousMaxOrderId = await page.evaluate(() => {
+            const rows = document.querySelectorAll('table tbody tr, table tr');
+            for (let row of rows) {
+                const match = row.innerText.match(/#(\d+)/);
+                if (match) return parseInt(match[1], 10);
+            }
+            return 0;
         });
 
-        // ৩. অর্ডার ফর্মে যাওয়া
+        console.log(`Previous Top Order ID on portal: #${previousMaxOrderId}`);
+
+        // ৩. নতুন অর্ডার সাবমিট করা
         const orderPageUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=order_now&service_id=1';
         await page.goto(orderPageUrl, { waitUntil: 'networkidle2' });
 
@@ -109,35 +115,19 @@ app.post('/process-order', async (req, res) => {
             }
         }
 
-        console.log('Inputs filled successfully. Submitting form with button payload...');
+        console.log('Inputs filled successfully. Submitting form...');
 
-        // ফর্মে p_order_submit_btn ডাটা সংযুক্ত করে নিখুঁত সাবমিট
-        await Promise.all([
-            page.evaluate(() => {
-                const form = document.querySelector('form');
-                const btn = document.querySelector('#sop_order_submit_btn') || document.querySelector('button[type="submit"]');
-                
-                if (form) {
-                    // PHP POST ডাটায় বাটনের নাম পাঠাতে হিডেন ফিল্ড যোগ
-                    const hiddenInput = document.createElement('input');
-                    hiddenInput.type = 'hidden';
-                    hiddenInput.name = 'p_order_submit_btn';
-                    hiddenInput.value = '1';
-                    form.appendChild(hiddenInput);
-                }
-
-                if (btn) {
-                    btn.click();
-                } else if (form) {
-                    form.submit();
-                }
-            }),
-            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
-        ]);
+        const submitButton = await page.$('#sop_order_submit_btn, button[type="submit"]');
+        if (submitButton) {
+            await Promise.all([
+                submitButton.click(),
+                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
+            ]);
+        }
 
         console.log('Order submit action performed.');
 
-        // ৪. নতুন অর্ডার তালিকাভুক্ত হওয়া এবং অ্যাপ্রুভালের জন্য অপেক্ষা (সর্বোচ্চ ৭ মিনিট)
+        // ৪. নতুন অর্ডার এবং 'sop-link-btn' ডাউনলোড লিংকের জন্য অপেক্ষা
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
         let fileDownloadUrl = null;
@@ -149,35 +139,38 @@ app.post('/process-order', async (req, res) => {
             let orderCheck = { isNew: false, completed: false, url: null };
             
             try {
-                // Detached Frame এরর এড়াতে try-catch ব্যবহার
-                orderCheck = await page.evaluate((prevRef) => {
-                    const firstRow = document.querySelector('table tbody tr:first-child') || document.querySelector('table tr:nth-child(2)');
-                    if (!firstRow) return { isNew: false, completed: false, url: null };
-
-                    const currentText = firstRow.innerText.trim();
-                    const isNew = currentText !== prevRef;
-                    const statusText = currentText.toUpperCase();
-                    const isCompleted = statusText.includes('COMPLETED');
-                    const downloadBtn = firstRow.querySelector('a[href*="download"], a[href*="sop_action"]');
-
-                    return {
-                        isNew: isNew,
-                        completed: isCompleted,
-                        url: downloadBtn ? downloadBtn.href : null
-                    };
-                }, previousTopOrderReference);
+                orderCheck = await page.evaluate((prevMaxId) => {
+                    const rows = Array.from(document.querySelectorAll('table tbody tr, table tr'));
+                    for (const row of rows) {
+                        const text = row.innerText;
+                        const match = text.match(/#(\d+)/);
+                        if (match) {
+                            const currentId = parseInt(match[1], 10);
+                            if (currentId > prevMaxId) {
+                                // নির্দিষ্ট কাস্টম ক্লাস a.sop-link-btn অথবা sop_action কোয়েরি লিংক খোঁজা
+                                const downloadBtn = row.querySelector('a.sop-link-btn, a[href*="sop_action=download"], a[href*="download"]');
+                                return {
+                                    isNew: true,
+                                    completed: downloadBtn !== null || text.toUpperCase().includes('COMPLETED'),
+                                    url: downloadBtn ? downloadBtn.href : null
+                                };
+                            }
+                        }
+                    }
+                    return { isNew: false, completed: false, url: null };
+                }, previousMaxOrderId);
             } catch (evalError) {
-                console.log('Waiting for frame stabilization...');
+                console.log('Waiting for table render...');
             }
 
             if (!orderCheck.isNew) {
                 console.log('Order submission not registered on portal yet. Waiting...');
             } else if (orderCheck.completed && orderCheck.url) {
                 fileDownloadUrl = orderCheck.url;
-                console.log('New order successfully registered and approved by Admin!');
+                console.log(`New order approved! Download Link Found: ${fileDownloadUrl}`);
                 break;
             } else {
-                console.log('New order registered on portal. Waiting for admin approval...');
+                console.log('New order registered on portal. Waiting for COMPLETED status and Download Link...');
             }
 
             await new Promise(r => setTimeout(r, checkInterval)); 
@@ -188,9 +181,7 @@ app.post('/process-order', async (req, res) => {
             throw new Error('Order submission failed or was not approved by admin within time limit.');
         }
 
-        console.log(`File download URL found: ${fileDownloadUrl}`);
-
-        // ৫. কুকি (Cookie) সেসন ব্যবহার করে ফাইল ডাউনলোড
+        // ৫. কুকি সেসন সহ ফাইল ডাউনলোড
         const cookies = await page.cookies();
         const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
         
@@ -218,7 +209,7 @@ app.post('/process-order', async (req, res) => {
 
         const rawDownloadUrl = ghResponse.data.content.download_url;
 
-        // ৭. ওয়ার্ডপ্রেসে ফাইল লিংক আপডেট পাঠানো
+        // ৭. ওয়ার্ডপ্রেসে স্ট্যাটাস আপডেট
         if (WP_SITE_URL) {
             await axios.post(`${WP_SITE_URL}/wp-json/wp/v2/sop_orders`, {
                 order_id: order_id,
