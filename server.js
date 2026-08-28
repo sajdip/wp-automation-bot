@@ -46,16 +46,23 @@ app.post('/process-order', async (req, res) => {
         });
 
         const page = await browser.newPage();
+        page.setDefaultNavigationTimeout(60000);
 
         // ১. লগইন পেজে যাওয়া ও লগইন
         await page.goto(SITE_LOGIN_URL, { waitUntil: 'networkidle2' });
         
-        // লগইন ইনপুট ফিল্ড ও পাসওয়ার্ড ফিল্ড
+        await page.waitForSelector('input[type="text"], input[type="email"]', { visible: true, timeout: 15000 });
         await page.type('input[type="text"], input[type="email"]', SITE_USERNAME);
         await page.type('input[type="password"]', SITE_PASSWORD);
         
+        const submitSelector = 'button[type="submit"], input[type="submit"]';
+        await page.waitForSelector(submitSelector, { visible: true, timeout: 15000 });
+
         await Promise.all([
-            page.click('button[type="submit"], input[type="submit"]'),
+            page.evaluate((sel) => {
+                const btn = document.querySelector(sel);
+                if (btn) btn.click();
+            }, submitSelector),
             page.waitForNavigation({ waitUntil: 'networkidle2' })
         ]);
 
@@ -67,19 +74,27 @@ app.post('/process-order', async (req, res) => {
 
         // নাম (অপশনাল) পূরণ
         if (input_name) {
-            const nameInput = await page.$('input[name="name"], input[placeholder*="নাম"]');
+            const nameSelector = 'input[name="name"], input[placeholder*="নাম"]';
+            await page.waitForSelector(nameSelector, { visible: true, timeout: 10000 }).catch(() => {});
+            const nameInput = await page.$(nameSelector);
             if (nameInput) await nameInput.type(input_name);
         }
 
         // Digit পূরণ
         if (input_digit) {
-            const digitInput = await page.$('input[name="digit"], input[name="nid_number"]');
+            const digitSelector = 'input[name="digit"], input[name="nid_number"]';
+            await page.waitForSelector(digitSelector, { visible: true, timeout: 10000 }).catch(() => {});
+            const digitInput = await page.$(digitSelector);
             if (digitInput) await digitInput.type(input_digit.toString());
         }
 
-        // Submit Order Now বাটনে ক্লিক
+        // Submit Order Now বাটনে নিরাপদ ক্লিক
+        await page.waitForSelector(submitSelector, { visible: true, timeout: 15000 });
         await Promise.all([
-            page.click('button[type="submit"], input[type="submit"]'),
+            page.evaluate((sel) => {
+                const btn = document.querySelector(sel);
+                if (btn) btn.click();
+            }, submitSelector),
             page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
         ]);
 
@@ -89,25 +104,31 @@ app.post('/process-order', async (req, res) => {
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
-        // স্ট্যাটাস COMPLETED হওয়া এবং Download বাটন পাওয়া পর্যন্ত সর্বোচ্চ ৩০ সেকেন্ড ওয়েট
-        await page.waitForSelector('a.btn, button:contains("Download"), td:contains("COMPLETED")', { timeout: 30000 }).catch(() => {});
+        // ডাউনলোডের ইউআরএল (Download Link) লুপের মাধ্যমে চেক করা (সর্বোচ্চ ৩০ সেকেন্ড)
+        let fileDownloadUrl = null;
+        const startTime = Date.now();
 
-        // ডাউনলোডের ইউআরএল (Download Link) সংগ্রহ
-        const fileDownloadUrl = await page.evaluate(() => {
-            const rows = document.querySelectorAll('table tr');
-            for (let row of rows) {
-                if (row.innerText.includes('COMPLETED')) {
-                    const downloadBtn = row.querySelector('a');
-                    if (downloadBtn) return downloadBtn.href;
+        while (Date.now() - startTime < 30000) {
+            fileDownloadUrl = await page.evaluate(() => {
+                const rows = document.querySelectorAll('table tr');
+                for (let row of rows) {
+                    if (row.innerText.includes('COMPLETED')) {
+                        const downloadBtn = row.querySelector('a');
+                        if (downloadBtn) return downloadBtn.href;
+                    }
                 }
-            }
-            return null;
-        });
+                return null;
+            });
+
+            if (fileDownloadUrl) break;
+            await new Promise(r => setTimeout(r, 2000)); // ২ সেকেন্ড পরপর চেক করবে
+            await page.reload({ waitUntil: 'networkidle2' });
+        }
 
         await browser.close();
 
         if (!fileDownloadUrl) {
-            throw new Error('Completed download link not found in My Orders page');
+            throw new Error('Completed download link not found in My Orders page within 30 seconds');
         }
 
         console.log(`File download URL found: ${fileDownloadUrl}`);
