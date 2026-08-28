@@ -50,18 +50,15 @@ app.post('/process-order', async (req, res) => {
         // ১. লগইন পেজে যাওয়া ও লগইন
         await page.goto(SITE_LOGIN_URL, { waitUntil: 'networkidle2' });
         
-        await page.waitForSelector('input[type="text"], input[type="email"]', { visible: true, timeout: 15000 });
-        await page.type('input[type="text"], input[type="email"]', SITE_USERNAME);
+        await page.waitForSelector('input[type="text"], input[type="email"], input[name="username"], input[name="user"]', { visible: true, timeout: 15000 });
+        
+        // ইউজারনেম ও পাসওয়ার্ড ইনপুট দেওয়া
+        await page.type('input[type="text"], input[type="email"], input[name="username"], input[name="user"]', SITE_USERNAME);
         await page.type('input[type="password"]', SITE_PASSWORD);
         
-        const loginSubmitSelector = 'button[type="submit"], input[type="submit"], button';
-        await page.waitForSelector(loginSubmitSelector, { visible: true, timeout: 15000 });
-
+        // বাটন সিলেক্টরের ওপর নির্ভর না করে ফর্ম সাবমিট ও Enter প্রেস করা
         await Promise.all([
-            page.evaluate((sel) => {
-                const btn = document.querySelector(sel);
-                if (btn) btn.click();
-            }, loginSubmitSelector),
+            page.keyboard.press('Enter'),
             page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
         ]);
 
@@ -71,7 +68,7 @@ app.post('/process-order', async (req, res) => {
         const orderPageUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=order_now&service_id=1';
         await page.goto(orderPageUrl, { waitUntil: 'networkidle2' });
 
-        // নাম (অপশনাল) পূরণ
+        // নাম পূরণ
         if (input_name) {
             const nameSelector = 'input[name="name"], input[placeholder*="নাম"], input[type="text"]';
             await page.waitForSelector(nameSelector, { visible: true, timeout: 10000 }).catch(() => {});
@@ -84,21 +81,20 @@ app.post('/process-order', async (req, res) => {
             const digitSelector = 'input[name="digit"], input[name="nid_number"], input[type="number"]';
             await page.waitForSelector(digitSelector, { visible: true, timeout: 10000 }).catch(() => {});
             const digitInput = await page.$(digitSelector);
-            if (digitInput) await digitInput.type(input_digit.toString());
+            if (digitInput) {
+                await digitInput.type(input_digit.toString());
+                // ইনপুট দেওয়া শেষে Enter চাপবে যেন ফর্ম সাবমিট হয়
+                await page.keyboard.press('Enter');
+            }
+        } else {
+            // যদি digit না থাকে তবে সরাসরি JS দিয়ে ফর্ম সাবমিট করবে
+            await page.evaluate(() => {
+                const form = document.querySelector('form');
+                if (form) form.submit();
+            });
         }
 
-        // Submit Button খুঁজে বের করা এবং ক্লিক (Multiple Selector & JS Click Approach)
-        await page.evaluate(() => {
-            const btn = document.querySelector('button[type="submit"], input[type="submit"], form button, .btn-primary, button');
-            if (btn) {
-                btn.click();
-            } else {
-                const forms = document.forms;
-                if (forms.length > 0) forms[0].submit();
-            }
-        });
-
-        await new Promise(r => setTimeout(r, 4000)); // পেজ সাবমিটের সময়ের জন্য ৪ সেকেন্ড বিরতি
+        await new Promise(r => setTimeout(r, 4000)); // ৪ সেকেন্ড অপেক্ষা
 
         console.log('Order submitted. Navigating to My Orders history...');
 
