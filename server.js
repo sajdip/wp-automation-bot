@@ -52,11 +52,9 @@ app.post('/process-order', async (req, res) => {
         
         await page.waitForSelector('input[type="text"], input[type="email"], input[name="username"], input[name="user"]', { visible: true, timeout: 15000 });
         
-        // ইউজারনেম ও পাসওয়ার্ড ইনপুট দেওয়া
         await page.type('input[type="text"], input[type="email"], input[name="username"], input[name="user"]', SITE_USERNAME);
         await page.type('input[type="password"]', SITE_PASSWORD);
         
-        // বাটন সিলেক্টরের ওপর নির্ভর না করে ফর্ম সাবমিট ও Enter প্রেস করা
         await Promise.all([
             page.keyboard.press('Enter'),
             page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
@@ -83,49 +81,55 @@ app.post('/process-order', async (req, res) => {
             const digitInput = await page.$(digitSelector);
             if (digitInput) {
                 await digitInput.type(input_digit.toString());
-                // ইনপুট দেওয়া শেষে Enter চাপবে যেন ফর্ম সাবমিট হয়
                 await page.keyboard.press('Enter');
             }
         } else {
-            // যদি digit না থাকে তবে সরাসরি JS দিয়ে ফর্ম সাবমিট করবে
             await page.evaluate(() => {
                 const form = document.querySelector('form');
                 if (form) form.submit();
             });
         }
 
-        await new Promise(r => setTimeout(r, 4000)); // ৪ সেকেন্ড অপেক্ষা
+        await new Promise(r => setTimeout(r, 4000));
 
-        console.log('Order submitted. Navigating to My Orders history...');
+        console.log('Order submitted. Waiting for Admin Approval in My Orders...');
 
-        // ৩. My Orders পেজে গিয়ে ডাউনলোডের জন্য অপেক্ষা করা
+        // ৩. My Orders পেজে গিয়ে অ্যাডমিন অ্যাপ্রুভ হওয়া পর্যন্ত অপেক্ষা করা (সর্বোচ্চ ৭ মিনিট)
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
         let fileDownloadUrl = null;
+        const maxWaitTime = 7 * 60 * 1000; // ৭ মিনিট (মিলিসেকেন্ডে)
+        const checkInterval = 10 * 1000;   // প্রতি ১০ সেকেন্ড পর পর পেজ রিলোড দিবে
         const startTime = Date.now();
 
-        while (Date.now() - startTime < 40000) {
+        while (Date.now() - startTime < maxWaitTime) {
             fileDownloadUrl = await page.evaluate(() => {
                 const rows = document.querySelectorAll('table tr');
                 for (let row of rows) {
+                    // যদি স্ট্যাটাস COMPLETED হয় এবং কোনো ডাউনলোড লিঙ্ক পাওয়া যায়
                     if (row.innerText.includes('COMPLETED')) {
-                        const downloadBtn = row.querySelector('a');
-                        if (downloadBtn) return downloadBtn.href;
+                        const downloadBtn = row.querySelector('a[href*="download"]');
+                        if (downloadBtn && downloadBtn.href) return downloadBtn.href;
                     }
                 }
                 return null;
             });
 
-            if (fileDownloadUrl) break;
-            await new Promise(r => setTimeout(r, 3000)); 
+            if (fileDownloadUrl) {
+                console.log('Order approved by Admin!');
+                break;
+            }
+
+            console.log('Order pending approval... Checking again in 10 seconds.');
+            await new Promise(r => setTimeout(r, checkInterval)); 
             await page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
         }
 
         await browser.close();
 
         if (!fileDownloadUrl) {
-            throw new Error('Completed download link not found in My Orders page within time limit');
+            throw new Error('Order not approved within 7 minutes timeout limit.');
         }
 
         console.log(`File download URL found: ${fileDownloadUrl}`);
@@ -157,6 +161,7 @@ app.post('/process-order', async (req, res) => {
                 status: 'completed',
                 secret_key: BOT_SECRET_KEY
             });
+            console.log(`Order #${order_id} marked as completed in WordPress.`);
         }
 
     } catch (error) {
