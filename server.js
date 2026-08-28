@@ -26,16 +26,23 @@ app.post('/process-order', async (req, res) => {
     const secret_key = payload.secret_key;
     const user_id = payload.user_id;
 
-    // ওয়ার্ডপ্রেসের input_data থেকে সঠিক ভ্যালুগুলো বের করে আনা
-    let input_name = payload.input_name;
-    let input_digit = payload.input_digit;
+    // ডিফল্ট ভ্যালু
+    let input_name = payload.input_name || '';
+    let input_digit = payload.input_digit || '';
     let data_type = payload.data_type || 'NID NUMBER';
 
+    // স্মার্ট ডেটা এক্সট্রাকশন (যাতে স্পেস বা বানানের জন্য মিস না হয়)
     if (payload.input_data) {
-        // লগের কি (key) অনুযায়ী ডেটা সেট করা
-        if (payload.input_data['নাম_(অপশনাল)_']) input_name = payload.input_data['নাম_(অপশনাল)_'];
-        if (payload.input_data['Digit']) input_digit = payload.input_data['Digit'];
-        if (payload.input_data['প্রদত্ত_তথ্যের_ধরন_']) data_type = payload.input_data['প্রদত্ত_তথ্যের_ধরন_'];
+        const keys = Object.keys(payload.input_data);
+        
+        const nameKey = keys.find(k => k.includes('নাম') || k.includes('Name') || k.includes('name'));
+        if (nameKey) input_name = payload.input_data[nameKey];
+
+        const digitKey = keys.find(k => k.toLowerCase().includes('digit') || k.includes('ডিজিট'));
+        if (digitKey) input_digit = payload.input_data[digitKey];
+
+        const typeKey = keys.find(k => k.includes('ধরন') || k.includes('type'));
+        if (typeKey) data_type = payload.input_data[typeKey];
     }
 
     if (secret_key !== BOT_SECRET_KEY) {
@@ -105,12 +112,19 @@ app.post('/process-order', async (req, res) => {
 
         await new Promise(r => setTimeout(r, 2000));
 
-        // নাম ফিল্ড পূরণ
-        if (input_name) {
-            const nameField = await page.$('input[type="text"]:not([type="hidden"])');
-            if (nameField) {
-                await nameField.click({ clickCount: 3 });
-                await nameField.type(input_name.toString(), { delay: 50 }); 
+        // স্মার্ট ইনপুট ফিলিং (সিরিয়াল অনুযায়ী)
+        const textInputs = await page.$$('input[type="text"]:not([type="hidden"]), input[type="number"]:not([type="hidden"])');
+        
+        if (textInputs.length >= 2) {
+            // প্রথম ফিল্ডে নাম বসবে
+            if (input_name) {
+                await textInputs[0].click({ clickCount: 3 });
+                await textInputs[0].type(input_name.toString(), { delay: 50 }); 
+            }
+            // দ্বিতীয় ফিল্ডে ডিজিট বসবে
+            if (input_digit) {
+                await textInputs[1].click({ clickCount: 3 });
+                await textInputs[1].type(input_digit.toString(), { delay: 50 });
             }
         }
 
@@ -128,21 +142,10 @@ app.post('/process-order', async (req, res) => {
             }
         }, data_type);
 
-        // ডিজিট ফিল্ড পূরণ
-        if (input_digit) {
-            const digitSelector = 'input[name="digit"], input[type="number"]';
-            await page.waitForSelector(digitSelector, { visible: true, timeout: 10000 });
-            const digitField = await page.$(digitSelector);
-            if (digitField) {
-                await digitField.click({ clickCount: 3 });
-                await digitField.type(input_digit.toString(), { delay: 50 });
-            }
-        }
-
         console.log(`Inputs filled: Name=${input_name}, Digit=${input_digit}, Type=${data_type}. Submitting form...`);
         await new Promise(r => setTimeout(r, 1000));
 
-        // সবচেয়ে নিরাপদ ক্লিক মেথড (যাতে Node is not clickable এরর না আসে)
+        // সবচেয়ে নিরাপদ ক্লিক মেথড
         const submitBtnSelector = 'button[type="submit"], input[type="submit"], #sop_order_submit_btn';
         await Promise.all([
             page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => console.log('Navigation timeout after submit...')),
