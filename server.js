@@ -61,17 +61,21 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Login successful on MailPro Portal.');
 
-        // ২. বর্তমানে সর্বোচ্চ কত নম্বর অর্ডার আছে তা বের করা
+        // ২. পোর্টালে থাকা সর্বোচ্চ (Maximum) অর্ডার আইডি বের করা
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
         
         const previousMaxOrderId = await page.evaluate(() => {
+            let maxId = 0;
             const rows = document.querySelectorAll('table tbody tr, table tr');
-            for (let row of rows) {
+            rows.forEach(row => {
                 const match = row.innerText.match(/#(\d+)/);
-                if (match) return parseInt(match[1], 10);
-            }
-            return 0;
+                if (match) {
+                    const id = parseInt(match[1], 10);
+                    if (id > maxId) maxId = id;
+                }
+            });
+            return maxId;
         });
 
         console.log(`Previous Top Order ID on portal: #${previousMaxOrderId}`);
@@ -117,14 +121,18 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Inputs filled successfully. Submitting form...');
 
-        const submitButton = await page.$('#sop_order_submit_btn, button[type="submit"]');
-        if (submitButton) {
-            await Promise.all([
-                submitButton.click(),
-                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
-            ]);
-        }
+        // সরাসরি বাটন ক্লিক/ফর্ম সাবমিট এবং AJAX-এর জন্য ওয়েট
+        await page.evaluate(() => {
+            const btn = document.querySelector('#sop_order_submit_btn') || document.querySelector('button[type="submit"]') || document.querySelector('input[type="submit"]');
+            if (btn) {
+                btn.click();
+            } else {
+                const form = document.querySelector('form');
+                if (form) form.submit();
+            }
+        });
 
+        await new Promise(r => setTimeout(r, 5000));
         console.log('Order submit action performed.');
 
         // ৪. নতুন অর্ডার এবং 'sop-link-btn' ডাউনলোড লিংকের জন্য অপেক্ষা
@@ -147,7 +155,6 @@ app.post('/process-order', async (req, res) => {
                         if (match) {
                             const currentId = parseInt(match[1], 10);
                             if (currentId > prevMaxId) {
-                                // নির্দিষ্ট কাস্টম ক্লাস a.sop-link-btn অথবা sop_action কোয়েরি লিংক খোঁজা
                                 const downloadBtn = row.querySelector('a.sop-link-btn, a[href*="sop_action=download"], a[href*="download"]');
                                 return {
                                     isNew: true,
