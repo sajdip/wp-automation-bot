@@ -61,58 +61,70 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Login successful on MailPro Portal.');
 
-        // ২. অর্ডার ফর্মে যাওয়া ও নিখুঁতভাবে ইনপুট প্রদান
+        // ২. অর্ডার দেওয়ার আগের সর্বশেষ অর্ডারের রেফারেন্স নেওয়া (পুরোনো ডাটা এড়াতে)
+        const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
+        await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
+        
+        const previousTopOrderReference = await page.evaluate(() => {
+            const firstRow = document.querySelector('table tbody tr:first-child') || document.querySelector('table tr:nth-child(2)');
+            return firstRow ? firstRow.innerText.trim() : '';
+        });
+
+        // ৩. অর্ডার ফর্মে যাওয়া ও ইনপুট পূরণ
         const orderPageUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=order_now&service_id=1';
         await page.goto(orderPageUrl, { waitUntil: 'networkidle2' });
 
-        // ১. নাম ইনপুট
+        // নাম (অপশনাল) পূরণ
         if (input_name) {
-            const nameInput = await page.$('input[type="text"]:not([type="hidden"])');
-            if (nameInput) {
-                await nameInput.click({ clickCount: 3 });
-                await nameInput.type(input_name);
-            }
+            await page.evaluate((val) => {
+                const el = document.querySelector('input[type="text"]:not([type="hidden"])');
+                if (el) {
+                    el.value = val;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            }, input_name);
         }
 
-        // ২. ড্রপডাউন সিলেক্ট (প্রদত্ত তথ্যের ধরন)
-        const selectElement = await page.$('select');
-        if (selectElement) {
-            const targetType = data_type || 'NID NUMBER';
-            await page.evaluate((typeVal) => {
+        // ড্রপডাউন টাইপ সিলেক্ট
+        if (data_type) {
+            await page.evaluate((val) => {
                 const sel = document.querySelector('select');
                 if (sel) {
-                    for (let i = 0; i < sel.options.length; i++) {
-                        if (sel.options[i].text.includes(typeVal) || sel.options[i].value.includes(typeVal)) {
-                            sel.selectedIndex = i;
+                    for (let opt of sel.options) {
+                        if (opt.text.includes(val) || opt.value.includes(val)) {
+                            sel.value = opt.value;
                             sel.dispatchEvent(new Event('change', { bubbles: true }));
                             break;
                         }
                     }
                 }
-            }, targetType);
+            }, data_type);
         }
 
-        // ৩. Digit/NID নম্বর ইনপুট
+        // Digit/NID নম্বর পূরণ (বাধ্যতামূলক)
         if (input_digit) {
-            const digitInput = await page.waitForSelector('input[name="digit"], input[type="number"]', { visible: true, timeout: 10000 });
-            if (digitInput) {
-                await digitInput.click({ clickCount: 3 });
-                await digitInput.type(input_digit.toString());
-            }
+            await page.evaluate((val) => {
+                const el = document.querySelector('input[name="digit"]') || document.querySelector('input[type="number"]');
+                if (el) {
+                    el.value = val;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }, input_digit.toString());
         }
 
-        console.log('Inputs filled successfully. Submitting "Submit Order Now" button...');
+        console.log('Inputs filled successfully. Submitting form directly...');
 
-        // ৪. Submit Order Now বাটনে ক্লিক ও ফর্ম সাবমিট
-        await Promise.all([
-            page.click('button[type="submit"]'),
-            page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
-        ]);
+        // সরাসরি ফর্ম সাবমিট করা
+        await page.evaluate(() => {
+            const form = document.querySelector('form');
+            if (form) form.submit();
+        });
 
-        console.log('Order submitted successfully on third-party site!');
+        await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
+        console.log('Order form submission executed.');
 
-        // ৩. My Orders পেজে গিয়ে শুধুমাত্র নতুন অর্ডারের অনুমোদনের জন্য অপেক্ষা (সর্বোচ্চ ৭ মিনিট)
-        const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
+        // ৪. নতুন অর্ডার তালিকায় এসেছে কিনা এবং অ্যাপ্রুভালের জন্য অপেক্ষা (সর্বোচ্চ ৭ মিনিট)
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
         let fileDownloadUrl = null;
@@ -121,43 +133,56 @@ app.post('/process-order', async (req, res) => {
         const startTime = Date.now();
 
         while (Date.now() - startTime < maxWaitTime) {
-            fileDownloadUrl = await page.evaluate(() => {
-                // টেবিলের একদম প্রথম রো (অর্থাৎ শেষ জমা করা অর্ডারটি)
+            const orderCheck = await page.evaluate((prevRef) => {
                 const firstRow = document.querySelector('table tbody tr:first-child') || document.querySelector('table tr:nth-child(2)');
-                if (firstRow) {
-                    const rowText = firstRow.innerText.toUpperCase();
-                    // যদি প্রথম রোর স্ট্যাটাস COMPLETED হয়
-                    if (rowText.includes('COMPLETED')) {
-                        const downloadBtn = firstRow.querySelector('a[href*="download"], a[href*="sop_action"]');
-                        if (downloadBtn && downloadBtn.href) return downloadBtn.href;
-                    }
-                }
-                return null;
-            });
+                if (!firstRow) return { isNew: false, completed: false, url: null };
 
-            if (fileDownloadUrl) {
-                console.log('New order approved by Admin!');
+                const currentText = firstRow.innerText.trim();
+                const isNew = currentText !== prevRef; // নতুন অর্ডার কিনা তা যাচাই
+                const statusText = currentText.toUpperCase();
+                const isCompleted = statusText.includes('COMPLETED');
+                const downloadBtn = firstRow.querySelector('a[href*="download"], a[href*="sop_action"]');
+
+                return {
+                    isNew: isNew,
+                    completed: isCompleted,
+                    url: downloadBtn ? downloadBtn.href : null
+                };
+            }, previousTopOrderReference);
+
+            if (!orderCheck.isNew) {
+                console.log('Order submission not registered on portal yet. Waiting...');
+            } else if (orderCheck.completed && orderCheck.url) {
+                fileDownloadUrl = orderCheck.url;
+                console.log('New order successfully registered and approved by Admin!');
                 break;
+            } else {
+                console.log('New order registered on portal. Waiting for admin approval...');
             }
 
-            console.log('Waiting for admin approval on top order...');
             await new Promise(r => setTimeout(r, checkInterval)); 
             await page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
         }
 
         if (!fileDownloadUrl) {
-            throw new Error('Order was submitted, but admin did not approve within 7 minutes.');
+            throw new Error('Order submission failed or was not approved by admin within time limit.');
         }
 
         console.log(`File download URL found: ${fileDownloadUrl}`);
 
-        // ৪. সেশন ধরে রেখে আসল ফাইল ডাউনলোড
-        const downloadResponse = await page.goto(fileDownloadUrl, { waitUntil: 'networkidle2' });
-        const fileBuffer = await downloadResponse.buffer();
-
+        // ৫. কুকি (Cookie) ব্যবহার করে নিরাপদে ফাইল ডাউনলোড করা (Frame Detached Error প্রতিরোধে)
+        const cookies = await page.cookies();
+        const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+        
         await browser.close();
 
-        // GitHub-এ আপলোড
+        const fileResponse = await axios.get(fileDownloadUrl, {
+            headers: { 'Cookie': cookieHeader },
+            responseType: 'arraybuffer'
+        });
+        const fileBuffer = Buffer.from(fileResponse.data);
+
+        // ৬. GitHub-এ ফাইল আপলোড
         const fileName = `order_${order_id}_${Date.now()}.pdf`;
         const githubUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/downloads/${fileName}`;
         
@@ -173,7 +198,7 @@ app.post('/process-order', async (req, res) => {
 
         const rawDownloadUrl = ghResponse.data.content.download_url;
 
-        // ৫. ওয়ার্ডপ্রেসে আপডেট পাঠানো
+        // ৭. ওয়ার্ডপ্রেসে আপডেট পাঠানো
         if (WP_SITE_URL) {
             await axios.post(`${WP_SITE_URL}/wp-json/wp/v2/sop_orders`, {
                 order_id: order_id,
