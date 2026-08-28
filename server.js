@@ -21,6 +21,9 @@ app.get('/', (req, res) => {
 app.post('/process-order', async (req, res) => {
     const { order_id, secret_key, input_name, input_digit, data_type, user_id } = req.body;
 
+    // ওয়ার্ডপ্রেস থেকে আসা ডেটাগুলো লগে প্রিন্ট করে চেক করার জন্য
+    console.log("📥 Data received from WordPress:", req.body);
+
     if (secret_key !== BOT_SECRET_KEY) {
         return res.status(403).json({ success: false, message: 'Invalid Secret Key' });
     }
@@ -86,11 +89,15 @@ app.post('/process-order', async (req, res) => {
         const orderPageUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=order_now&service_id=1';
         await page.goto(orderPageUrl, { waitUntil: 'networkidle2' });
 
+        // পেজ পুরোপুরি লোড হওয়ার জন্য একটু সময় দেওয়া
+        await new Promise(r => setTimeout(r, 2000));
+
         if (input_name) {
             const nameField = await page.$('input[type="text"]:not([type="hidden"])');
             if (nameField) {
                 await nameField.click({ clickCount: 3 });
-                await nameField.type(input_name.toString());
+                // মানুষের মতো আস্তে আস্তে টাইপ করার জন্য delay
+                await nameField.type(input_name.toString(), { delay: 100 }); 
             }
         }
 
@@ -114,35 +121,34 @@ app.post('/process-order', async (req, res) => {
             const digitField = await page.$(digitSelector);
             if (digitField) {
                 await digitField.click({ clickCount: 3 });
-                await digitField.type(input_digit.toString());
+                // মানুষের মতো আস্তে আস্তে টাইপ করার জন্য delay
+                await digitField.type(input_digit.toString(), { delay: 100 });
             }
         }
 
         console.log('Inputs filled successfully. Submitting form...');
 
-        // নেটিভ ক্লিক দিয়ে AJAX ইভেন্ট ট্র্রিগার করা এবং অটোমেটিক রিডাইরেক্টের জন্য অপেক্ষা করা
-        const submitBtn = await page.$('#sop_order_submit_btn, button[type="submit"], input[type="submit"]');
+        // ওয়েবসাইটকে ইনপুটগুলো রেজিস্টার করার জন্য ১ সেকেন্ড সময় দেওয়া
+        await new Promise(r => setTimeout(r, 1000));
+
+        // নেটিভ ক্লিক (আসল মাউস ক্লিকের মতো কাজ করবে)
+        const submitBtnSelector = 'button[type="submit"], input[type="submit"], #sop_order_submit_btn';
+        const submitBtn = await page.$(submitBtnSelector);
         
         if (submitBtn) {
             await Promise.all([
                 page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => console.log('Navigation timeout after submit...')),
-                page.evaluate(btn => btn.click(), submitBtn)
+                page.click(submitBtnSelector) 
             ]);
         } else {
-            await Promise.all([
-                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
-                page.evaluate(() => {
-                    const btn = document.querySelector('button, input[type="submit"]');
-                    if(btn) btn.click();
-                })
-            ]);
+            console.log("Submit button not found!");
         }
 
         console.log('Order submit action performed and redirected to history page.');
 
         // ৪. নতুন অর্ডার এবং ডাউনলোডের জন্য অপেক্ষা
         let fileDownloadUrl = null;
-        const maxWaitTime = 7 * 60 * 1000; // ৭ মিনিট অপেক্ষা করবে 
+        const maxWaitTime = 7 * 60 * 1000; // ৭ মিনিট অপেক্ষা করবে
         const checkInterval = 10 * 1000;
         const startTime = Date.now();
 
