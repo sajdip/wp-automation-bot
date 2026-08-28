@@ -61,11 +61,11 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Login successful on MailPro Portal.');
 
-        // ২. পোর্টালে থাকা সর্বোচ্চ (Maximum) অর্ডার আইডি বের করা (AJAX Wait সহ)
+        // ২. পোর্টালে থাকা সর্বোচ্চ (Maximum) অর্ডার আইডি বের করা
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
         await page.waitForSelector('table', { timeout: 10000 }).catch(() => {});
-        await new Promise(r => setTimeout(r, 2500)); // AJAX লোডের পর্যাপ্ত সময়
+        await new Promise(r => setTimeout(r, 2000));
         
         const previousMaxOrderId = await page.evaluate(() => {
             let maxId = 0;
@@ -120,20 +120,19 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Inputs filled successfully. Submitting form...');
 
-        await page.evaluate(() => {
-            const btn = document.querySelector('#sop_order_submit_btn') || document.querySelector('button[type="submit"]') || document.querySelector('input[type="submit"]');
-            if (btn) {
-                btn.click();
-            } else {
-                const form = document.querySelector('form');
-                if (form) form.submit();
-            }
-        });
+        // নেটিভ ক্লিক দিয়ে AJAX ইভেন্ট ট্র্রিগার করা
+        const submitBtn = await page.$('#sop_order_submit_btn, button[type="submit"], input[type="submit"]');
+        if (submitBtn) {
+            await submitBtn.click();
+        } else {
+            await page.click('button, input[type="submit"]');
+        }
 
-        await new Promise(r => setTimeout(r, 5000));
+        // AJAX রেসপন্স প্রসেস হওয়ার জন্য অপেক্ষা
+        await new Promise(r => setTimeout(r, 4000));
         console.log('Order submit action performed.');
 
-        // ৪. নতুন অর্ডার রেজিস্টার হওয়া এবং ডাউনলোডের জন্য লুপে অপেক্ষা
+        // ৪. নতুন অর্ডার এবং ডাউনলোডের জন্য অপেক্ষা
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
         let fileDownloadUrl = null;
@@ -189,7 +188,7 @@ app.post('/process-order', async (req, res) => {
             throw new Error('Order submission failed or was not approved by admin within time limit.');
         }
 
-        // ৫. ফাইল ডাউনলোড
+        // ৫. কুকি সেসন সহ ফাইল ডাউনলোড
         const cookies = await page.cookies();
         const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
         
