@@ -109,10 +109,9 @@ app.post('/process-order', async (req, res) => {
 
         await new Promise(r => setTimeout(r, 2000));
 
-        // স্মার্ট ইনপুট ফিলিং - পেজের সব ইনপুট খুঁজে বের করা
+        // স্মার্ট ইনপুট ফিলিং
         const textInputs = await page.$$('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])');
         
-        // বট ঠিক কোন ঘরগুলোতে ডেটা বসাচ্ছে তা চেক করার জন্য লগ
         const inputDetails = await page.evaluate(() => {
             const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'));
             const main = inputs.slice(-2);
@@ -121,7 +120,6 @@ app.post('/process-order', async (req, res) => {
         console.log(`Targeting bottom input fields:`, inputDetails);
 
         if (textInputs.length >= 2) {
-            // পেজের শেষের দুটি ইনপুট ফিল্ডকে নাম এবং ডিজিট হিসেবে ধরে নিবে (ওপরের সার্চ বার এড়াতে)
             const mainInputs = textInputs.slice(-2); 
             
             if (input_name) {
@@ -149,27 +147,52 @@ app.post('/process-order', async (req, res) => {
             }
         }, data_type);
 
-        console.log(`Inputs filled: Name=${input_name}, Digit=${input_digit}, Type=${data_type}. Submitting form...`);
+        console.log(`Inputs filled: Name=${input_name}, Digit=${input_digit}, Type=${data_type}. Locating Submit Button...`);
         await new Promise(r => setTimeout(r, 1000));
 
-        // Submit Button Click - স্ক্রল করে নিশ্চিত করা
-        const submitBtnSelector = 'button[type="submit"], input[type="submit"], #sop_order_submit_btn';
-        await page.evaluate((sel) => {
-            const btn = document.querySelector(sel);
-            if(btn) btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, submitBtnSelector);
-        
-        await new Promise(r => setTimeout(r, 500)); // স্ক্রল হওয়ার জন্য সামান্য সময়
+        // সাবমিট বাটন চেনার নতুন এবং স্মার্ট লজিক
+        const btnInfo = await page.evaluate(() => {
+            // প্রথমে নির্দিষ্ট আইডি খুঁজবে
+            let btn = document.querySelector('#sop_order_submit_btn');
+            
+            if (!btn) {
+                // পেজের সব বাটন খুঁজবে এবং উল্টে নিবে (যাতে ফর্মের বাটন আগে পায়)
+                const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]')).reverse();
+                
+                // লেখায় submit বা order আছে এমন বাটন খুঁজবে
+                btn = buttons.find(b => {
+                    const text = (b.innerText || b.value || '').toLowerCase();
+                    return text.includes('submit') || text.includes('order') || text.includes('সাবমিট') || text.includes('অর্ডার');
+                });
+                
+                // তাও না পেলে শেষের যে কোনো সাবমিট বাটন
+                if(!btn) {
+                    btn = buttons.find(b => b.type === 'submit' || b.tagName === 'BUTTON');
+                }
+            }
 
-        await Promise.all([
-            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => console.log('Navigation timeout after submit...')),
-            page.evaluate((sel) => {
-                const btn = document.querySelector(sel);
-                if(btn) btn.click();
-            }, submitBtnSelector)
-        ]);
+            if (btn) {
+                btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // পুপেটিয়ার যাতে চিনতে পারে তাই একটি স্পেশাল ক্লাস যোগ করে দিলাম
+                btn.classList.add('bot-target-submit-btn');
+                return btn.innerText || btn.value || btn.id || 'Button Identified';
+            }
+            return null;
+        });
 
-        console.log('Order submit action performed and redirected to history page.');
+        if (btnInfo) {
+            console.log(`Identified correct submit button: "${btnInfo}". Clicking now...`);
+            await new Promise(r => setTimeout(r, 1000)); // স্ক্রল হওয়ার জন্য অপেক্ষা
+            
+            // স্পেশাল ক্লাস ধরে পারফেক্ট ক্লিক
+            await Promise.all([
+                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => console.log('Navigation timeout after submit...')),
+                page.click('.bot-target-submit-btn')
+            ]);
+            console.log('Order submit action performed and redirected to history page.');
+        } else {
+            console.log("Could not identify the submit button!");
+        }
 
         // ৪. নতুন অর্ডার এবং ডাউনলোডের জন্য অপেক্ষা
         let fileDownloadUrl = null;
