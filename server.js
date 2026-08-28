@@ -5,7 +5,6 @@ const app = express();
 
 app.use(express.json());
 
-// Environment Variables
 const BOT_SECRET_KEY = process.env.BOT_SECRET_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_REPO = process.env.GITHUB_REPO;
@@ -47,11 +46,10 @@ app.post('/process-order', async (req, res) => {
         const page = await browser.newPage();
         page.setDefaultNavigationTimeout(60000);
 
-        // ১. লগইন পেজে যাওয়া ও লগইন
+        // ১. লগইন প্রসেস
         await page.goto(SITE_LOGIN_URL, { waitUntil: 'networkidle2' });
         
         await page.waitForSelector('input[type="text"], input[type="email"], input[name="username"], input[name="user"]', { visible: true, timeout: 15000 });
-        
         await page.type('input[type="text"], input[type="email"], input[name="username"], input[name="user"]', SITE_USERNAME);
         await page.type('input[type="password"]', SITE_PASSWORD);
         
@@ -62,39 +60,36 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Login successful on MailPro Portal.');
 
-        // ২. অর্ডার ফর্মে যাওয়া ও তথ্য পূরণ
+        // ২. অর্ডার ফর্মে যাওয়া ও সাবমিট করা
         const orderPageUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=order_now&service_id=1';
         await page.goto(orderPageUrl, { waitUntil: 'networkidle2' });
 
-        // নাম পূরণ
+        // ইনপুট ফিল্ড ইনসার্ট
         if (input_name) {
-            const nameSelector = 'input[name="name"], input[placeholder*="নাম"], input[type="text"]';
-            await page.waitForSelector(nameSelector, { visible: true, timeout: 10000 }).catch(() => {});
-            const nameInput = await page.$(nameSelector);
+            const nameInput = await page.$('input[name="name"], input[placeholder*="নাম"], input[type="text"]');
             if (nameInput) await nameInput.type(input_name);
         }
 
-        // Digit পূরণ
         if (input_digit) {
-            const digitSelector = 'input[name="digit"], input[name="nid_number"], input[type="number"]';
-            await page.waitForSelector(digitSelector, { visible: true, timeout: 10000 }).catch(() => {});
-            const digitInput = await page.$(digitSelector);
-            if (digitInput) {
-                await digitInput.type(input_digit.toString());
-                await page.keyboard.press('Enter');
-            }
-        } else {
-            await page.evaluate(() => {
-                const form = document.querySelector('form');
-                if (form) form.submit();
-            });
+            const digitInput = await page.$('input[name="digit"], input[name="nid_number"], input[type="number"]');
+            if (digitInput) await digitInput.type(input_digit.toString());
         }
 
-        await new Promise(r => setTimeout(r, 4000));
+        // ফর্ম নিশ্চিতভাবে সাবমিট করা
+        await page.evaluate(() => {
+            const submitBtn = document.querySelector('button[type="submit"], input[type="submit"]');
+            if (submitBtn) {
+                submitBtn.click();
+            } else {
+                const form = document.querySelector('form');
+                if (form) form.submit();
+            }
+        });
 
-        console.log('Order submitted. Waiting for Admin Approval in My Orders...');
+        await page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {});
+        console.log('Order form submitted successfully.');
 
-        // ৩. My Orders পেজে গিয়ে ডাউনলোডের জন্য অপেক্ষা করা (সর্বোচ্চ ৭ মিনিট)
+        // ৩. My Orders পেজে গিয়ে একদম সাম্প্রতিক/নতুন অর্ডারের জন্য অপেক্ষা করা
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
@@ -105,38 +100,36 @@ app.post('/process-order', async (req, res) => {
 
         while (Date.now() - startTime < maxWaitTime) {
             fileDownloadUrl = await page.evaluate(() => {
-                const rows = document.querySelectorAll('table tr');
-                for (let row of rows) {
-                    if (row.innerText.includes('COMPLETED')) {
-                        const downloadBtn = row.querySelector('a');
-                        if (downloadBtn && downloadBtn.href) return downloadBtn.href;
-                    }
+                const firstRow = document.querySelector('table tbody tr:first-child') || document.querySelector('table tr:nth-child(2)');
+                if (firstRow && firstRow.innerText.includes('COMPLETED')) {
+                    const downloadBtn = firstRow.querySelector('a[href*="download"]');
+                    if (downloadBtn && downloadBtn.href) return downloadBtn.href;
                 }
                 return null;
             });
 
             if (fileDownloadUrl) {
-                console.log('Order approved by Admin!');
+                console.log('New order approved by Admin!');
                 break;
             }
 
+            console.log('Waiting for admin approval on top order...');
             await new Promise(r => setTimeout(r, checkInterval)); 
             await page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
         }
 
         if (!fileDownloadUrl) {
-            throw new Error('Order not approved within 7 minutes timeout limit.');
+            throw new Error('Order submission was not completed/approved within time limit.');
         }
 
         console.log(`File download URL found: ${fileDownloadUrl}`);
 
-        // ৪. সেশন সহ ব্রাউজার (Puppeteer) দিয়ে ফাইল ডাউনলোড
+        // ৪. ফাইল ডাউনলোড ও GitHub-এ আপলোড
         const downloadResponse = await page.goto(fileDownloadUrl, { waitUntil: 'networkidle2' });
         const fileBuffer = await downloadResponse.buffer();
 
         await browser.close();
 
-        // GitHub-এ আপলোড
         const fileName = `order_${order_id}_${Date.now()}.pdf`;
         const githubUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/downloads/${fileName}`;
         
