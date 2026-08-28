@@ -32,7 +32,6 @@ app.post('/process-order', async (req, res) => {
     try {
         console.log(`Starting Automation for Order #${order_id}...`);
         
-        // Render / Linux Environment Optimized Launch Config
         browser = await puppeteer.launch({
             headless: 'new',
             args: [
@@ -48,33 +47,33 @@ app.post('/process-order', async (req, res) => {
         const page = await browser.newPage();
         page.setDefaultNavigationTimeout(60000);
 
-        // ১. লগইন পেজে যাওয়া ও লগইন
+        // ১. লগইন পেজে যাওয়া ও লগইন
         await page.goto(SITE_LOGIN_URL, { waitUntil: 'networkidle2' });
         
         await page.waitForSelector('input[type="text"], input[type="email"]', { visible: true, timeout: 15000 });
         await page.type('input[type="text"], input[type="email"]', SITE_USERNAME);
         await page.type('input[type="password"]', SITE_PASSWORD);
         
-        const submitSelector = 'button[type="submit"], input[type="submit"]';
-        await page.waitForSelector(submitSelector, { visible: true, timeout: 15000 });
+        const loginSubmitSelector = 'button[type="submit"], input[type="submit"], button';
+        await page.waitForSelector(loginSubmitSelector, { visible: true, timeout: 15000 });
 
         await Promise.all([
             page.evaluate((sel) => {
                 const btn = document.querySelector(sel);
                 if (btn) btn.click();
-            }, submitSelector),
-            page.waitForNavigation({ waitUntil: 'networkidle2' })
+            }, loginSubmitSelector),
+            page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
         ]);
 
         console.log('Login successful on MailPro Portal.');
 
-        // ২. অর্ডার ফর্মে যাওয়া ও তথ্য পূরণ
+        // ২. অর্ডার ফর্মে যাওয়া ও তথ্য পূরণ
         const orderPageUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=order_now&service_id=1';
         await page.goto(orderPageUrl, { waitUntil: 'networkidle2' });
 
         // নাম (অপশনাল) পূরণ
         if (input_name) {
-            const nameSelector = 'input[name="name"], input[placeholder*="নাম"]';
+            const nameSelector = 'input[name="name"], input[placeholder*="নাম"], input[type="text"]';
             await page.waitForSelector(nameSelector, { visible: true, timeout: 10000 }).catch(() => {});
             const nameInput = await page.$(nameSelector);
             if (nameInput) await nameInput.type(input_name);
@@ -82,33 +81,35 @@ app.post('/process-order', async (req, res) => {
 
         // Digit পূরণ
         if (input_digit) {
-            const digitSelector = 'input[name="digit"], input[name="nid_number"]';
+            const digitSelector = 'input[name="digit"], input[name="nid_number"], input[type="number"]';
             await page.waitForSelector(digitSelector, { visible: true, timeout: 10000 }).catch(() => {});
             const digitInput = await page.$(digitSelector);
             if (digitInput) await digitInput.type(input_digit.toString());
         }
 
-        // Submit Order Now বাটনে নিরাপদ ক্লিক
-        await page.waitForSelector(submitSelector, { visible: true, timeout: 15000 });
-        await Promise.all([
-            page.evaluate((sel) => {
-                const btn = document.querySelector(sel);
-                if (btn) btn.click();
-            }, submitSelector),
-            page.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {})
-        ]);
+        // Submit Button খুঁজে বের করা এবং ক্লিক (Multiple Selector & JS Click Approach)
+        await page.evaluate(() => {
+            const btn = document.querySelector('button[type="submit"], input[type="submit"], form button, .btn-primary, button');
+            if (btn) {
+                btn.click();
+            } else {
+                const forms = document.forms;
+                if (forms.length > 0) forms[0].submit();
+            }
+        });
+
+        await new Promise(r => setTimeout(r, 4000)); // পেজ সাবমিটের সময়ের জন্য ৪ সেকেন্ড বিরতি
 
         console.log('Order submitted. Navigating to My Orders history...');
 
-        // ৩. My Orders পেজে গিয়ে ডাউনলোডের জন্য ওয়েট করা
+        // ৩. My Orders পেজে গিয়ে ডাউনলোডের জন্য অপেক্ষা করা
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
-        // ডাউনলোডের ইউআরএল (Download Link) লুপের মাধ্যমে চেক করা (সর্বোচ্চ ৩০ সেকেন্ড)
         let fileDownloadUrl = null;
         const startTime = Date.now();
 
-        while (Date.now() - startTime < 30000) {
+        while (Date.now() - startTime < 40000) {
             fileDownloadUrl = await page.evaluate(() => {
                 const rows = document.querySelectorAll('table tr');
                 for (let row of rows) {
@@ -121,14 +122,14 @@ app.post('/process-order', async (req, res) => {
             });
 
             if (fileDownloadUrl) break;
-            await new Promise(r => setTimeout(r, 2000)); // ২ সেকেন্ড পরপর চেক করবে
-            await page.reload({ waitUntil: 'networkidle2' });
+            await new Promise(r => setTimeout(r, 3000)); 
+            await page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
         }
 
         await browser.close();
 
         if (!fileDownloadUrl) {
-            throw new Error('Completed download link not found in My Orders page within 30 seconds');
+            throw new Error('Completed download link not found in My Orders page within time limit');
         }
 
         console.log(`File download URL found: ${fileDownloadUrl}`);
@@ -151,7 +152,7 @@ app.post('/process-order', async (req, res) => {
 
         const rawDownloadUrl = ghResponse.data.content.download_url;
 
-        // ৫. ওয়ার্ডপ্রেসে আপডেট পাঠানো
+        // ৫. ওয়ার্ডপ্রেসে আপডেট পাঠানো
         if (WP_SITE_URL) {
             await axios.post(`${WP_SITE_URL}/wp-json/wp/v2/sop_orders`, {
                 order_id: order_id,
