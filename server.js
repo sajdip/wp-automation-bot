@@ -94,22 +94,21 @@ app.post('/process-order', async (req, res) => {
 
         console.log('Order submitted. Waiting for Admin Approval in My Orders...');
 
-        // ৩. My Orders পেজে গিয়ে অ্যাডমিন অ্যাপ্রুভ হওয়া পর্যন্ত অপেক্ষা করা (সর্বোচ্চ ৭ মিনিট)
+        // ৩. My Orders পেজে গিয়ে ডাউনলোডের জন্য অপেক্ষা করা (সর্বোচ্চ ৭ মিনিট)
         const myOrdersUrl = 'https://mailpro.alwaysdata.net/index.php/service-portal/?view=orders';
         await page.goto(myOrdersUrl, { waitUntil: 'networkidle2' });
 
         let fileDownloadUrl = null;
-        const maxWaitTime = 7 * 60 * 1000; // ৭ মিনিট (মিলিসেকেন্ডে)
-        const checkInterval = 10 * 1000;   // প্রতি ১০ সেকেন্ড পর পর পেজ রিলোড দিবে
+        const maxWaitTime = 7 * 60 * 1000;
+        const checkInterval = 10 * 1000;
         const startTime = Date.now();
 
         while (Date.now() - startTime < maxWaitTime) {
             fileDownloadUrl = await page.evaluate(() => {
                 const rows = document.querySelectorAll('table tr');
                 for (let row of rows) {
-                    // যদি স্ট্যাটাস COMPLETED হয় এবং কোনো ডাউনলোড লিঙ্ক পাওয়া যায়
                     if (row.innerText.includes('COMPLETED')) {
-                        const downloadBtn = row.querySelector('a[href*="download"]');
+                        const downloadBtn = row.querySelector('a');
                         if (downloadBtn && downloadBtn.href) return downloadBtn.href;
                     }
                 }
@@ -121,12 +120,9 @@ app.post('/process-order', async (req, res) => {
                 break;
             }
 
-            console.log('Order pending approval... Checking again in 10 seconds.');
             await new Promise(r => setTimeout(r, checkInterval)); 
             await page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
         }
-
-        await browser.close();
 
         if (!fileDownloadUrl) {
             throw new Error('Order not approved within 7 minutes timeout limit.');
@@ -134,12 +130,16 @@ app.post('/process-order', async (req, res) => {
 
         console.log(`File download URL found: ${fileDownloadUrl}`);
 
-        // ৪. ফাইল ডাউনলোড করে GitHub-এ আপলোড
-        const fileResponse = await axios.get(fileDownloadUrl, { responseType: 'arraybuffer' });
-        const fileBuffer = Buffer.from(fileResponse.data);
-        const fileName = `order_${order_id}_${Date.now()}.pdf`;
+        // ৪. সেশন সহ ব্রাউজার (Puppeteer) দিয়ে ফাইল ডাউনলোড
+        const downloadResponse = await page.goto(fileDownloadUrl, { waitUntil: 'networkidle2' });
+        const fileBuffer = await downloadResponse.buffer();
 
+        await browser.close();
+
+        // GitHub-এ আপলোড
+        const fileName = `order_${order_id}_${Date.now()}.pdf`;
         const githubUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/downloads/${fileName}`;
+        
         const ghResponse = await axios.put(githubUrl, {
             message: `Auto Uploaded Order #${order_id}`,
             content: fileBuffer.toString('base64')
