@@ -26,15 +26,12 @@ app.post('/process-order', async (req, res) => {
     const secret_key = payload.secret_key;
     const user_id = payload.user_id;
 
-    // ডিফল্ট ভ্যালু
     let input_name = payload.input_name || '';
     let input_digit = payload.input_digit || '';
     let data_type = payload.data_type || 'NID NUMBER';
 
-    // স্মার্ট ডেটা এক্সট্রাকশন (যাতে স্পেস বা বানানের জন্য মিস না হয়)
     if (payload.input_data) {
         const keys = Object.keys(payload.input_data);
-        
         const nameKey = keys.find(k => k.includes('নাম') || k.includes('Name') || k.includes('name'));
         if (nameKey) input_name = payload.input_data[nameKey];
 
@@ -112,19 +109,29 @@ app.post('/process-order', async (req, res) => {
 
         await new Promise(r => setTimeout(r, 2000));
 
-        // স্মার্ট ইনপুট ফিলিং (সিরিয়াল অনুযায়ী)
-        const textInputs = await page.$$('input[type="text"]:not([type="hidden"]), input[type="number"]:not([type="hidden"])');
+        // স্মার্ট ইনপুট ফিলিং - পেজের সব ইনপুট খুঁজে বের করা
+        const textInputs = await page.$$('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])');
         
+        // বট ঠিক কোন ঘরগুলোতে ডেটা বসাচ্ছে তা চেক করার জন্য লগ
+        const inputDetails = await page.evaluate(() => {
+            const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'));
+            const main = inputs.slice(-2);
+            return main.map(i => i.name || i.placeholder || i.id || 'Unknown Input');
+        });
+        console.log(`Targeting bottom input fields:`, inputDetails);
+
         if (textInputs.length >= 2) {
-            // প্রথম ফিল্ডে নাম বসবে
+            // পেজের শেষের দুটি ইনপুট ফিল্ডকে নাম এবং ডিজিট হিসেবে ধরে নিবে (ওপরের সার্চ বার এড়াতে)
+            const mainInputs = textInputs.slice(-2); 
+            
             if (input_name) {
-                await textInputs[0].click({ clickCount: 3 });
-                await textInputs[0].type(input_name.toString(), { delay: 50 }); 
+                await mainInputs[0].click({ clickCount: 3 });
+                await mainInputs[0].type(input_name.toString(), { delay: 50 }); 
             }
-            // দ্বিতীয় ফিল্ডে ডিজিট বসবে
+            
             if (input_digit) {
-                await textInputs[1].click({ clickCount: 3 });
-                await textInputs[1].type(input_digit.toString(), { delay: 50 });
+                await mainInputs[1].click({ clickCount: 3 });
+                await mainInputs[1].type(input_digit.toString(), { delay: 50 });
             }
         }
 
@@ -145,8 +152,15 @@ app.post('/process-order', async (req, res) => {
         console.log(`Inputs filled: Name=${input_name}, Digit=${input_digit}, Type=${data_type}. Submitting form...`);
         await new Promise(r => setTimeout(r, 1000));
 
-        // সবচেয়ে নিরাপদ ক্লিক মেথড
+        // Submit Button Click - স্ক্রল করে নিশ্চিত করা
         const submitBtnSelector = 'button[type="submit"], input[type="submit"], #sop_order_submit_btn';
+        await page.evaluate((sel) => {
+            const btn = document.querySelector(sel);
+            if(btn) btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, submitBtnSelector);
+        
+        await new Promise(r => setTimeout(r, 500)); // স্ক্রল হওয়ার জন্য সামান্য সময়
+
         await Promise.all([
             page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => console.log('Navigation timeout after submit...')),
             page.evaluate((sel) => {
